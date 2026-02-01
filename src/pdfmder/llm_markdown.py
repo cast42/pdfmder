@@ -6,12 +6,18 @@ This module contains the page-level LLM call used by the PDF → Markdown pipeli
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from time import perf_counter
+from typing import cast
 
 import logfire
+from openai import AsyncOpenAI, RateLimitError
 from pydantic_ai import Agent
 from pydantic_ai.messages import BinaryContent
+from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModelSettings
+from pydantic_ai.providers.openai import OpenAIProvider
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 
 @dataclass(frozen=True)
@@ -24,6 +30,56 @@ class PageMetrics:
     fallback: bool
 
 
+SYSTEM_PROMPT = (
+    "You are a document conversion assistant. Convert ONLY the current PDF page into "
+    "precise, high-quality Markdown. Preserve structure such as headings, tables, "
+    "lists, bold text, and callouts. Use surrounding pages only for context; do not "
+    "repeat their content. Return Markdown only—no explanations or code fences."
+)
+
+
+@lru_cache(maxsize=1)
+def _get_openai_client() -> AsyncOpenAI:
+    import os
+
+    if os.getenv("AZURE_OPENAI_ENDPOINT"):
+        api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("AZURE_OPENAI_API_KEY must be set for Azure OpenAI access.")
+        endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
+        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "preview")
+        base_url = f"{endpoint}/openai/v1"
+        return AsyncOpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            default_query={"api-version": api_version},
+        )
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY must be set for OpenAI access.")
+    base_url = os.environ.get("OPENAI_BASE_URL")
+    return AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+
+@lru_cache(maxsize=4)
+def _make_agent(model_name: str) -> Agent:
+    client = _get_openai_client()
+    provider = OpenAIProvider(openai_client=client)
+    model = OpenAIResponsesModel(model_name, provider=provider)
+    settings = OpenAIResponsesModelSettings()
+    return Agent(model=model, system_prompt=SYSTEM_PROMPT, model_settings=settings)
+
+
+@retry(
+    retry=retry_if_exception_type(RateLimitError),
+    stop=stop_after_attempt(6),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+)
+def _run_agent_with_retry(agent: Agent, parts: list[str | BinaryContent]) -> object:
+    return agent.run_sync(parts)
+
+
 def convert_to_markdown(
     *,
     prev_text: str | None,
@@ -34,7 +90,7 @@ def convert_to_markdown(
     next_image: Path | None,
     prev_markdown: str | None,
 ) -> tuple[str, PageMetrics]:
-    """Convert a single PDF page to Markdown using an LLM via Pydantic AI Gateway.
+    """Convert a single PDF page to Markdown using OpenAI Responses via PydanticAI.
 
     Args correspond to the page context window. Images are provided as local files.
 
@@ -45,11 +101,14 @@ def convert_to_markdown(
     import os
     import re
 
-    # Default to direct OpenAI. Can be swapped to e.g. anthropic:..., google-gla:..., or gateway/openai:...
-    model_name = os.getenv("PDFMDER_MODEL", "openai:gpt-5")
-    force_openai = os.getenv("PDFMDER_FORCE_OPENAI", "1") != "0"
-    if force_openai and model_name.startswith("gateway/openai:"):
-        model_name = model_name.removeprefix("gateway/")
+    # Default to direct OpenAI. When AZURE_OPENAI_ENDPOINT is set, use deployment name.
+    model_name = os.getenv("PDFMDER_MODEL", "gpt-5")
+    if model_name.startswith("gateway/openai:"):
+        model_name = model_name.removeprefix("gateway/openai:")
+    if model_name.startswith("openai:"):
+        model_name = model_name.removeprefix("openai:")
+    if os.getenv("AZURE_OPENAI_ENDPOINT"):
+        model_name = os.getenv("AZURE_OPENAI_DEPLOYMENT", model_name)
     allow_fallback = os.getenv("PDFMDER_ALLOW_FALLBACK", "1") != "0"
 
     def fallback_markdown(text: str) -> str:
@@ -67,16 +126,21 @@ def convert_to_markdown(
             usage = getattr(result, "result_usage", None)
         if usage is None:
             usage = getattr(result, "usage_info", None)
-        if usage is None and hasattr(result, "model_dump"):
-            dump = result.model_dump()
-            usage = dump.get("usage") or dump.get("result_usage") or dump.get("usage_info")
+        if usage is None:
+            model_dump = getattr(result, "model_dump", None)
+            if callable(model_dump):
+                dump = model_dump()
+                if isinstance(dump, dict):
+                    usage = dump.get("usage") or dump.get("result_usage") or dump.get("usage_info")
 
         def get_value(obj: object, *keys: str) -> int | None:
             for key in keys:
                 if isinstance(obj, dict) and key in obj:
-                    return obj[key]
+                    mapping = cast(dict[str, object], obj)
+                    value = mapping.get(key)
+                    return value if isinstance(value, int) else None
                 value = getattr(obj, key, None)
-                if value is not None:
+                if isinstance(value, int):
                     return value
             return None
 
@@ -91,7 +155,28 @@ def convert_to_markdown(
     start_time = perf_counter()
 
     # Basic runtime validation for provider credentials.
-    if model_name.startswith("openai:") and not os.getenv("OPENAI_API_KEY"):
+    if os.getenv("AZURE_OPENAI_ENDPOINT") and not os.getenv("AZURE_OPENAI_API_KEY"):
+        if allow_fallback:
+            logfire.warning(
+                "pdfmder.llm.fallback",
+                reason="missing_azure_key",
+                model=model_name,
+            )
+            duration_s = perf_counter() - start_time
+            return (
+                fallback_markdown(curr_text),
+                PageMetrics(
+                    model=model_name,
+                    input_tokens=None,
+                    output_tokens=None,
+                    total_tokens=None,
+                    duration_s=duration_s,
+                    fallback=True,
+                ),
+            )
+        raise RuntimeError("AZURE_OPENAI_API_KEY must be set when using Azure OpenAI.")
+
+    if not os.getenv("AZURE_OPENAI_ENDPOINT") and not os.getenv("OPENAI_API_KEY"):
         if allow_fallback:
             logfire.warning(
                 "pdfmder.llm.fallback",
@@ -110,31 +195,29 @@ def convert_to_markdown(
                     fallback=True,
                 ),
             )
-        raise RuntimeError(
-            "OPENAI_API_KEY is required when PDFMDER_MODEL starts with 'openai:'. "
-            "Set it in your environment or in a .env file (see .env.example)."
-        )
+        raise RuntimeError("OPENAI_API_KEY must be set for OpenAI access.")
 
-    agent = Agent(model_name)
+    agent = _make_agent(model_name)
 
-    prompt = (
-        "You are converting a PDF page to precise, well-structured Markdown. "
-        "Return ONLY Markdown (no prose, no code fences).\n\n"
-        "Strict rules:\n"
-        "1) Use ATX headings ONLY (#, ##, ###). No Setext headers.\n"
-        "2) Preserve document structure: headings, paragraphs, lists, and numbering.\n"
-        "3) Reconstruct tables using GitHub-flavored Markdown tables with a header row and separator row.\n"
-        "   - Keep column counts consistent across all rows.\n"
-        "   - If a table has no explicit header, infer a short header from context or use placeholders like 'Column 1'.\n"
-        "4) Keep text content faithful; do not invent new content.\n"
-        "5) Avoid repeating headers across pages unless the PDF explicitly repeats them.\n"
-        "6) Use blank lines between block elements.\n\n"
-        "You are given extracted text and rendered images for the previous/current/next pages. "
-        "Use surrounding pages to resolve heading levels, list continuity, and cross-page tables.\n\n"
-        f"PREVIOUS PAGE MARKDOWN (if any):\n{prev_markdown or ''}\n\n"
-        f"PREVIOUS PAGE TEXT (if any):\n{prev_text or ''}\n\n"
-        f"CURRENT PAGE TEXT:\n{curr_text}\n\n"
-        f"NEXT PAGE TEXT (if any):\n{next_text or ''}\n"
+    def build_section(title: str, body: str | None) -> str:
+        value = body if body else "None"
+        return f"## {title}\n{value}"
+
+    prompt = "\n\n".join(
+        [
+            "Convert ONLY the current PDF page into Markdown. "
+            "Use OCR text and page images to reflect structure. "
+            "Do NOT include content from other pages. Respond with Markdown only.",
+            "Rules:\n"
+            "- Use ATX headings only (#, ##, ###).\n"
+            "- Preserve lists, numbering, and callouts.\n"
+            "- Reconstruct tables using GitHub-flavored Markdown with a header row and separator.\n"
+            "- Keep column counts consistent and do not invent content.",
+            build_section("Previous Page Markdown", prev_markdown),
+            build_section("Previous Page Text", prev_text),
+            build_section("Current Page Text", curr_text),
+            build_section("Next Page Text", next_text),
+        ]
     )
 
     # Provide images as ImageUrl parts. force_download=True ensures local file is read and sent.
@@ -158,7 +241,7 @@ def convert_to_markdown(
         has_next=next_text is not None,
     ):
         try:
-            result = agent.run_sync(parts)
+            result = _run_agent_with_retry(agent, parts)
         except Exception as exc:  # noqa: BLE001
             if allow_fallback:
                 logfire.warning(

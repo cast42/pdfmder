@@ -115,9 +115,7 @@ def cli(
             avg_tokens = total_tokens / page_count
             avg_time = total_time / page_count
 
-            missing_tokens = sum(
-                1 for item in metrics if item.input_tokens is None or item.output_tokens is None
-            )
+            missing_tokens = sum(1 for item in metrics if item.input_tokens is None or item.output_tokens is None)
 
             summary_lines = [
                 f"Total input tokens: {total_input}",
