@@ -41,8 +41,12 @@ def cli(
 
         logfire.info("pdfmder.convert.start", pdf=str(pdf_path), output=str(out_path))
 
-        with console.status("Converting PDF → Markdown…", spinner="dots"):
-            md = convert_pdf_to_markdown(pdf_path)
+        try:
+            with console.status("Converting PDF → Markdown…", spinner="dots"):
+                md = convert_pdf_to_markdown(pdf_path)
+        except RuntimeError as e:
+            console.print(Panel.fit(str(e), title="pdfmder", style="red"))
+            raise typer.Exit(code=1)
 
         out_path.write_text(md, encoding="utf-8")
         logfire.info("pdfmder.convert.done", pdf=str(pdf_path), output=str(out_path), chars=len(md))

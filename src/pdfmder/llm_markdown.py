@@ -35,6 +35,13 @@ def convert_to_markdown(
     # Default to direct OpenAI. Can be swapped to e.g. anthropic:..., google-gla:..., or gateway/openai:...
     model_name = os.getenv("PDFMDER_MODEL", "openai:gpt-5")
 
+    # Basic runtime validation for provider credentials.
+    if model_name.startswith("openai:") and not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError(
+            "OPENAI_API_KEY is required when PDFMDER_MODEL starts with 'openai:'. "
+            "Set it in your environment or in a .env file (see .env.example)."
+        )
+
     agent = Agent(model_name)
 
     prompt = (
