@@ -3,39 +3,59 @@ from __future__ import annotations
 from pathlib import Path
 
 import logfire
-import pypdfium2 as pdfium
 
-from pdfmder.pdfium_extract import extract_pdf_assets
-
-
-def extract_text_per_page(pdf_path: Path) -> list[str]:
-    """Extract text per page from a (born-digital) PDF.
-
-    Note: for scanned PDFs, the text layer may be empty; OCR is not performed here.
-    """
-    with logfire.span("pdfmder.extract_text_per_page", pdf_path=str(pdf_path)):
-        pdf = pdfium.PdfDocument(str(pdf_path))
-        pages: list[str] = []
-        for i in range(len(pdf)):
-            page = pdf[i]
-            textpage = page.get_textpage()
-            text = textpage.get_text_range()
-            pages.append(text)
-        return pages
+from pdfmder.llm_markdown import convert_to_markdown
+from pdfmder.pdfium_extract import extract_pdf_assets_tmp
 
 
 def convert_pdf_to_markdown(pdf_path: Path) -> str:
-    """Convert a PDF to Markdown.
+    """Convert a PDF to Markdown page-by-page.
 
-    Current implementation: returns the extracted text and joins pages with a page break.
-    For our test fixture we generate a PDF that contains the raw markdown source as text,
-    which makes this conversion deterministic.
+    For each page, we call an LLM (via Pydantic AI Gateway) with:
+    - extracted text for prev/current/next pages
+    - rendered images for prev/current/next pages
+    - previous page's generated markdown
+
+    The LLM returns Markdown for the current page.
     """
     with logfire.span("pdfmder.convert_pdf_to_markdown", pdf_path=str(pdf_path)):
-        image_paths, page_texts, page_count = extract_pdf_assets(pdf_path)
-        logfire.info(
-            "pdfmder.extract_pdf_assets.done", pages=page_count, images=len(image_paths), texts=len(page_texts)
-        )
+        with extract_pdf_assets_tmp(pdf_path) as (image_paths, page_texts, page_count):
+            logfire.info(
+                "pdfmder.extract_pdf_assets.done", pages=page_count, images=len(image_paths), texts=len(page_texts)
+            )
 
-        # Keep it simple and stable.
-        return "\n\n---\n\n".join(p.strip("\n") for p in page_texts).strip() + "\n"
+            md_pages: list[str] = []
+            prev_md: str | None = None
+
+            for i in range(page_count):
+                prev_text = page_texts[i - 1] if i > 0 else None
+                prev_image = image_paths[i - 1] if i > 0 else None
+
+                curr_text = page_texts[i]
+                curr_image = image_paths[i]
+
+                next_text = page_texts[i + 1] if i + 1 < page_count else None
+                next_image = image_paths[i + 1] if i + 1 < page_count else None
+
+                logfire.info(
+                    "pdfmder.page.start",
+                    page=i + 1,
+                    pages=page_count,
+                    has_prev=i > 0,
+                    has_next=i + 1 < page_count,
+                )
+
+                md = convert_to_markdown(
+                    prev_text=prev_text,
+                    prev_image=prev_image,
+                    curr_text=curr_text,
+                    curr_image=curr_image,
+                    next_text=next_text,
+                    next_image=next_image,
+                    prev_markdown=prev_md,
+                )
+
+                md_pages.append(md)
+                prev_md = md
+
+            return "\n\n---\n\n".join(p.strip("\n") for p in md_pages).strip() + "\n"

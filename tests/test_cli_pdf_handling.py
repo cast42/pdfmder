@@ -39,8 +39,17 @@ def test_wrong_suffix_errors(tmp_path: Path) -> None:
     assert "Not a PDF" in result.stdout
 
 
-def test_happy_path_writes_output_file(tmp_path: Path) -> None:
-    """Smoke test: running the CLI produces a markdown file."""
+def test_happy_path_writes_output_file(tmp_path: Path, monkeypatch) -> None:
+    """Smoke test: running the CLI produces a markdown file.
+
+    We stub the LLM call to avoid network access during tests.
+    """
+
+    def fake_convert_to_markdown(**_kwargs) -> str:
+        return "# Page\n\nHello\n"
+
+    monkeypatch.setattr("pdfmder.converter.convert_to_markdown", fake_convert_to_markdown)
+
     project_root = Path(__file__).resolve().parents[1]
     ensure_test_pdf(project_root)
 
@@ -55,5 +64,4 @@ def test_happy_path_writes_output_file(tmp_path: Path) -> None:
     assert out_path.exists()
     produced = out_path.read_text(encoding="utf-8").strip()
     assert produced
-    # Should contain at least the first heading text
-    assert "Heading 1" in produced
+    assert "# Page" in produced

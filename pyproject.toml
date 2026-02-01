@@ -10,6 +10,7 @@ dependencies = [
     "logfire>=4.16.0",
     "pypdfium2>=4.0.0",
     "pillow>=10.0.0",
+    "pydantic-ai>=1.16.0",
 ]
 
 [project.scripts]
