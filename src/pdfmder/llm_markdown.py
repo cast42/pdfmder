@@ -9,7 +9,7 @@ from pathlib import Path
 
 import logfire
 from pydantic_ai import Agent
-from pydantic_ai.messages import ImageUrl
+from pydantic_ai.messages import BinaryContent
 
 
 def convert_to_markdown(
@@ -57,13 +57,14 @@ def convert_to_markdown(
     )
 
     # Provide images as ImageUrl parts. force_download=True ensures local file is read and sent.
-    parts: list[str | ImageUrl] = [prompt]
+    parts: list[str | BinaryContent] = [prompt]
 
     def add_image(label: str, path: Path | None) -> None:
         if path is None:
             return
         parts.append(f"\n\n{label}:\n")
-        parts.append(ImageUrl(url=path.as_uri(), force_download=True))
+        data = path.read_bytes()
+        parts.append(BinaryContent(data=data, media_type="image/png"))
 
     add_image("PREVIOUS PAGE IMAGE", prev_image)
     add_image("CURRENT PAGE IMAGE", curr_image)
