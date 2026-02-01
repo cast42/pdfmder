@@ -6,6 +6,7 @@ import logfire
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 
 from pdfmder.converter import convert_pdf_to_markdown
 
@@ -13,6 +14,7 @@ console = Console()
 
 # Console-only by default; user can configure a token later.
 logfire.configure(send_to_logfire=False)
+logfire.instrument_pydantic_ai()
 
 
 def cli(
@@ -57,7 +59,7 @@ def cli(
 
         try:
             with console.status("Converting PDF → Markdown…", spinner="dots"):
-                md = convert_pdf_to_markdown(pdf_path)
+                md, metrics = convert_pdf_to_markdown(pdf_path)
         except RuntimeError as e:
             console.print(Panel.fit(str(e), title="pdfmder", style="red"))
             raise typer.Exit(code=1)
@@ -66,6 +68,73 @@ def cli(
         logfire.info("pdfmder.convert.done", pdf=str(pdf_path), output=str(out_path), chars=len(md))
 
         console.print(Panel.fit(f"Wrote {out_path}", title="pdfmder", style="green"))
+
+        if metrics:
+            table = Table(title="LLM usage per page")
+            table.add_column("Page", justify="right")
+            table.add_column("Input", justify="right")
+            table.add_column("Output", justify="right")
+            table.add_column("Total", justify="right")
+            table.add_column("Time (s)", justify="right")
+            table.add_column("Fallback", justify="center")
+
+            def fmt_tokens(value: int | None) -> str:
+                return "n/a" if value is None else str(value)
+
+            def total_tokens_for_page() -> list[int]:
+                totals: list[int] = []
+                for item in metrics:
+                    if item.total_tokens is not None:
+                        totals.append(item.total_tokens)
+                    else:
+                        totals.append((item.input_tokens or 0) + (item.output_tokens or 0))
+                return totals
+
+            totals_per_page = total_tokens_for_page()
+
+            for index, item in enumerate(metrics, start=1):
+                table.add_row(
+                    str(index),
+                    fmt_tokens(item.input_tokens),
+                    fmt_tokens(item.output_tokens),
+                    fmt_tokens(totals_per_page[index - 1]),
+                    f"{item.duration_s:.2f}",
+                    "yes" if item.fallback else "no",
+                )
+
+            console.print(table)
+
+            page_count = len(metrics)
+            total_input = sum(item.input_tokens or 0 for item in metrics)
+            total_output = sum(item.output_tokens or 0 for item in metrics)
+            total_tokens = sum(totals_per_page)
+            total_time = sum(item.duration_s for item in metrics)
+
+            avg_input = total_input / page_count
+            avg_output = total_output / page_count
+            avg_tokens = total_tokens / page_count
+            avg_time = total_time / page_count
+
+            missing_tokens = sum(
+                1 for item in metrics if item.input_tokens is None or item.output_tokens is None
+            )
+
+            summary_lines = [
+                f"Total input tokens: {total_input}",
+                f"Total output tokens: {total_output}",
+                f"Total tokens: {total_tokens}",
+                f"Average input tokens/page: {avg_input:.2f}",
+                f"Average output tokens/page: {avg_output:.2f}",
+                f"Average total tokens/page: {avg_tokens:.2f}",
+                f"Total time: {total_time:.2f}s",
+                f"Average time/page: {avg_time:.2f}s",
+            ]
+            if missing_tokens:
+                summary_lines.append(
+                    f"Token counts unavailable for {missing_tokens} page(s) (fallback or provider did not return usage)."
+                )
+
+            console.print(Panel.fit("\n".join(summary_lines), title="LLM totals", style="blue"))
 
 
 def run() -> None:

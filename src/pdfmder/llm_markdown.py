@@ -5,11 +5,23 @@ This module contains the page-level LLM call used by the PDF → Markdown pipeli
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 
 import logfire
 from pydantic_ai import Agent
 from pydantic_ai.messages import BinaryContent
+
+
+@dataclass(frozen=True)
+class PageMetrics:
+    model: str
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    duration_s: float
+    fallback: bool
 
 
 def convert_to_markdown(
@@ -21,7 +33,7 @@ def convert_to_markdown(
     next_text: str | None,
     next_image: Path | None,
     prev_markdown: str | None,
-) -> str:
+) -> tuple[str, PageMetrics]:
     """Convert a single PDF page to Markdown using an LLM via Pydantic AI Gateway.
 
     Args correspond to the page context window. Images are provided as local files.
@@ -35,6 +47,9 @@ def convert_to_markdown(
 
     # Default to direct OpenAI. Can be swapped to e.g. anthropic:..., google-gla:..., or gateway/openai:...
     model_name = os.getenv("PDFMDER_MODEL", "openai:gpt-5")
+    force_openai = os.getenv("PDFMDER_FORCE_OPENAI", "1") != "0"
+    if force_openai and model_name.startswith("gateway/openai:"):
+        model_name = model_name.removeprefix("gateway/")
     allow_fallback = os.getenv("PDFMDER_ALLOW_FALLBACK", "1") != "0"
 
     def fallback_markdown(text: str) -> str:
@@ -44,6 +59,37 @@ def convert_to_markdown(
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned + "\n"
 
+    def extract_usage(result: object) -> tuple[int | None, int | None, int | None]:
+        usage = getattr(result, "usage", None)
+        if callable(usage):
+            usage = usage()
+        if usage is None:
+            usage = getattr(result, "result_usage", None)
+        if usage is None:
+            usage = getattr(result, "usage_info", None)
+        if usage is None and hasattr(result, "model_dump"):
+            dump = result.model_dump()
+            usage = dump.get("usage") or dump.get("result_usage") or dump.get("usage_info")
+
+        def get_value(obj: object, *keys: str) -> int | None:
+            for key in keys:
+                if isinstance(obj, dict) and key in obj:
+                    return obj[key]
+                value = getattr(obj, key, None)
+                if value is not None:
+                    return value
+            return None
+
+        if usage is None:
+            return None, None, None
+
+        input_tokens = get_value(usage, "input_tokens", "prompt_tokens")
+        output_tokens = get_value(usage, "output_tokens", "completion_tokens")
+        total_tokens = get_value(usage, "total_tokens")
+        return input_tokens, output_tokens, total_tokens
+
+    start_time = perf_counter()
+
     # Basic runtime validation for provider credentials.
     if model_name.startswith("openai:") and not os.getenv("OPENAI_API_KEY"):
         if allow_fallback:
@@ -52,7 +98,18 @@ def convert_to_markdown(
                 reason="missing_openai_key",
                 model=model_name,
             )
-            return fallback_markdown(curr_text)
+            duration_s = perf_counter() - start_time
+            return (
+                fallback_markdown(curr_text),
+                PageMetrics(
+                    model=model_name,
+                    input_tokens=None,
+                    output_tokens=None,
+                    total_tokens=None,
+                    duration_s=duration_s,
+                    fallback=True,
+                ),
+            )
         raise RuntimeError(
             "OPENAI_API_KEY is required when PDFMDER_MODEL starts with 'openai:'. "
             "Set it in your environment or in a .env file (see .env.example)."
@@ -110,9 +167,32 @@ def convert_to_markdown(
                     model=model_name,
                     error=str(exc),
                 )
-                return fallback_markdown(curr_text)
+                duration_s = perf_counter() - start_time
+                return (
+                    fallback_markdown(curr_text),
+                    PageMetrics(
+                        model=model_name,
+                        input_tokens=None,
+                        output_tokens=None,
+                        total_tokens=None,
+                        duration_s=duration_s,
+                        fallback=True,
+                    ),
+                )
             raise
 
         md = result.output
+        input_tokens, output_tokens, total_tokens = extract_usage(result)
+        duration_s = perf_counter() - start_time
         logfire.info("pdfmder.llm.page_done", chars=len(md))
-        return md.strip() + "\n"
+        return (
+            md.strip() + "\n",
+            PageMetrics(
+                model=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                duration_s=duration_s,
+                fallback=False,
+            ),
+        )

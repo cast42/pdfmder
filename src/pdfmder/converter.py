@@ -4,11 +4,11 @@ from pathlib import Path
 
 import logfire
 
-from pdfmder.llm_markdown import convert_to_markdown
+from pdfmder.llm_markdown import PageMetrics, convert_to_markdown
 from pdfmder.pdfium_extract import extract_pdf_assets_tmp
 
 
-def convert_pdf_to_markdown(pdf_path: Path) -> str:
+def convert_pdf_to_markdown(pdf_path: Path) -> tuple[str, list[PageMetrics]]:
     """Convert a PDF to Markdown page-by-page.
 
     For each page, we call an LLM (via Pydantic AI Gateway) with:
@@ -25,6 +25,7 @@ def convert_pdf_to_markdown(pdf_path: Path) -> str:
             )
 
             md_pages: list[str] = []
+            page_metrics: list[PageMetrics] = []
             prev_md: str | None = None
 
             for i in range(page_count):
@@ -45,7 +46,7 @@ def convert_pdf_to_markdown(pdf_path: Path) -> str:
                     has_next=i + 1 < page_count,
                 )
 
-                md = convert_to_markdown(
+                md, metrics = convert_to_markdown(
                     prev_text=prev_text,
                     prev_image=prev_image,
                     curr_text=curr_text,
@@ -56,6 +57,7 @@ def convert_pdf_to_markdown(pdf_path: Path) -> str:
                 )
 
                 md_pages.append(md)
+                page_metrics.append(metrics)
                 prev_md = md
 
-            return "\n\n---\n\n".join(p.strip("\n") for p in md_pages).strip() + "\n"
+            return "\n\n---\n\n".join(p.strip("\n") for p in md_pages).strip() + "\n", page_metrics
