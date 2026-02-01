@@ -1,9 +1,9 @@
-from __future__ import annotations
-
 """LLM-backed Markdown conversion.
 
 This module contains the page-level LLM call used by the PDF → Markdown pipeline.
 """
+
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -49,7 +49,7 @@ def convert_to_markdown(
     )
 
     # Provide images as ImageUrl parts. force_download=True ensures local file is read and sent.
-    parts: list[object] = [prompt]
+    parts: list[str | ImageUrl] = [prompt]
 
     def add_image(label: str, path: Path | None) -> None:
         if path is None:
