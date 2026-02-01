@@ -33,7 +33,9 @@ def convert_pdf_to_markdown(pdf_path: Path) -> str:
     """
     with logfire.span("pdfmder.convert_pdf_to_markdown", pdf_path=str(pdf_path)):
         image_paths, page_texts, page_count = extract_pdf_assets(pdf_path)
-        logfire.info("pdfmder.extract_pdf_assets.done", pages=page_count, images=len(image_paths), texts=len(page_texts))
+        logfire.info(
+            "pdfmder.extract_pdf_assets.done", pages=page_count, images=len(image_paths), texts=len(page_texts)
+        )
 
         # Keep it simple and stable.
         return "\n\n---\n\n".join(p.strip("\n") for p in page_texts).strip() + "\n"

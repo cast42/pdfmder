@@ -46,7 +46,7 @@ def render_pdf_pages_to_images_tmp(
                 bitmap = page.render(scale=scale)
                 pil = bitmap.to_pil()
 
-                out_path = tmp_dir / f"page-{i+1:04d}.{image_format}"
+                out_path = tmp_dir / f"page-{i + 1:04d}.{image_format}"
                 pil.save(out_path)
 
                 image_paths.append(out_path)
