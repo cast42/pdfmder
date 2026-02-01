@@ -32,7 +32,8 @@ def convert_to_markdown(
     # Read config from environment
     import os
 
-    model_name = os.getenv("PDFMDER_MODEL", "gateway/openai:gpt-5")
+    # Default to direct OpenAI. Can be swapped to e.g. anthropic:..., google-gla:..., or gateway/openai:...
+    model_name = os.getenv("PDFMDER_MODEL", "openai:gpt-5")
 
     agent = Agent(model_name)
 
