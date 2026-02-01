@@ -5,7 +5,7 @@ from pathlib import Path
 import logfire
 import pypdfium2 as pdfium
 
-from pdfmder.pdfium_images import render_pdf_pages_to_images_tmp
+from pdfmder.pdfium_extract import extract_pdf_assets
 
 
 def extract_text_per_page(pdf_path: Path) -> list[str]:
@@ -32,11 +32,8 @@ def convert_pdf_to_markdown(pdf_path: Path) -> str:
     which makes this conversion deterministic.
     """
     with logfire.span("pdfmder.convert_pdf_to_markdown", pdf_path=str(pdf_path)):
-        # Render page images to a temporary folder (cleaned up after conversion).
-        # We'll use these later for layout detection / OCR; for now we just exercise the pipeline.
-        with render_pdf_pages_to_images_tmp(pdf_path) as (image_paths, _pil_images, page_count):
-            logfire.info("pdfmder.render_pages.done", pages=page_count, images=len(image_paths))
+        image_paths, page_texts, page_count = extract_pdf_assets(pdf_path)
+        logfire.info("pdfmder.extract_pdf_assets.done", pages=page_count, images=len(image_paths), texts=len(page_texts))
 
-        pages = extract_text_per_page(pdf_path)
         # Keep it simple and stable.
-        return "\n\n---\n\n".join(p.strip("\n") for p in pages).strip() + "\n"
+        return "\n\n---\n\n".join(p.strip("\n") for p in page_texts).strip() + "\n"
