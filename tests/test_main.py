@@ -1,22 +1,12 @@
-"""Tests for the project's CLI entry point."""
+"""Tests for pdfmder CLI."""
 
-from python_minimal_boilerplate import cli
+from typer.testing import CliRunner
+
+from pdfmder.cli import app
 
 
-def test_main_logs_greeting(capsys, monkeypatch) -> None:
-    """The entry point should log and print the greeting."""
-    calls: list[tuple[str, dict[str, str]]] = []
-
-    def fake_info(event: str, **kwargs):
-        calls.append((event, kwargs))
-
-    monkeypatch.setattr(cli.logfire, "info", fake_info)
-
-    cli.main()
-    captured = capsys.readouterr()
-
-    std_lines = captured.out.strip().splitlines()
-
-    assert calls == [("application.startup", {"message": cli.GREETING})]
-    assert std_lines
-    assert std_lines[-1] == cli.GREETING
+def test_cli_prints_hello_world() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    assert "Hello world" in result.stdout
