@@ -9,19 +9,17 @@ from rich.panel import Panel
 
 from pdfmder.converter import convert_pdf_to_markdown
 
-app = typer.Typer(add_completion=False)
 console = Console()
 
 # Console-only by default; user can configure a token later.
 logfire.configure(send_to_logfire=False)
 
 
-@app.command()
-def main(
+def cli(
     pdf: Path = typer.Argument(..., help="Path to the PDF file to convert"),
     output: Path | None = typer.Option(None, "-o", "--output", help="Output markdown file path"),
 ) -> None:
-    """Convert a PDF file to Markdown."""
+    """pdfmder: convert PDF files to Markdown."""
     with logfire.span("pdfmder.cli", pdf=str(pdf), output=str(output) if output else None):
         pdf_path = pdf
         if not pdf_path.is_absolute():
@@ -50,3 +48,12 @@ def main(
         logfire.info("pdfmder.convert.done", pdf=str(pdf_path), output=str(out_path), chars=len(md))
 
         console.print(Panel.fit(f"Wrote {out_path}", title="pdfmder", style="green"))
+
+
+def run() -> None:
+    """Console entry point."""
+    typer.run(cli)
+
+
+if __name__ == "__main__":
+    run()

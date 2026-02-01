@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import typer
 from typer.testing import CliRunner
 
-from pdfmder.cli import app
+from pdfmder.cli import cli
+
+app = typer.Typer(add_completion=False)
+app.command()(cli)
 
 
 def ensure_test_pdf(project_root: Path) -> None:
