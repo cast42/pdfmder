@@ -35,9 +35,23 @@ def cli(
 
         out_path = output
         if out_path is None:
-            out_path = pdf_path.with_suffix(".md")
+            default_dir = Path.cwd() / "output"
+            default_dir.mkdir(parents=True, exist_ok=True)
+            out_path = default_dir / f"{pdf_path.stem}.md"
         elif not out_path.is_absolute():
             out_path = Path.cwd() / out_path
+
+        if out_path.exists():
+            stem = out_path.stem
+            suffix = out_path.suffix
+            parent = out_path.parent
+            counter = 1
+            while True:
+                candidate = parent / f"{stem}-{counter}{suffix}"
+                if not candidate.exists():
+                    out_path = candidate
+                    break
+                counter += 1
 
         logfire.info("pdfmder.convert.start", pdf=str(pdf_path), output=str(out_path))
 

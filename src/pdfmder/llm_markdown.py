@@ -31,12 +31,28 @@ def convert_to_markdown(
     """
     # Read config from environment
     import os
+    import re
 
     # Default to direct OpenAI. Can be swapped to e.g. anthropic:..., google-gla:..., or gateway/openai:...
     model_name = os.getenv("PDFMDER_MODEL", "openai:gpt-5")
+    allow_fallback = os.getenv("PDFMDER_ALLOW_FALLBACK", "1") != "0"
+
+    def fallback_markdown(text: str) -> str:
+        cleaned = text.strip()
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned + "\n"
 
     # Basic runtime validation for provider credentials.
     if model_name.startswith("openai:") and not os.getenv("OPENAI_API_KEY"):
+        if allow_fallback:
+            logfire.warning(
+                "pdfmder.llm.fallback",
+                reason="missing_openai_key",
+                model=model_name,
+            )
+            return fallback_markdown(curr_text)
         raise RuntimeError(
             "OPENAI_API_KEY is required when PDFMDER_MODEL starts with 'openai:'. "
             "Set it in your environment or in a .env file (see .env.example)."
@@ -45,11 +61,19 @@ def convert_to_markdown(
     agent = Agent(model_name)
 
     prompt = (
-        "You are converting a PDF page to well-structured Markdown. "
-        "Return ONLY Markdown. Use ATX headings (#, ##, ###, ...). "
-        "Preserve tables, lists, links, and structure as best as possible.\n\n"
-        "You are given the extracted text and rendered images for the previous/current/next pages. "
-        "Use surrounding pages to resolve heading levels and cross-page tables.\n\n"
+        "You are converting a PDF page to precise, well-structured Markdown. "
+        "Return ONLY Markdown (no prose, no code fences).\n\n"
+        "Strict rules:\n"
+        "1) Use ATX headings ONLY (#, ##, ###). No Setext headers.\n"
+        "2) Preserve document structure: headings, paragraphs, lists, and numbering.\n"
+        "3) Reconstruct tables using GitHub-flavored Markdown tables with a header row and separator row.\n"
+        "   - Keep column counts consistent across all rows.\n"
+        "   - If a table has no explicit header, infer a short header from context or use placeholders like 'Column 1'.\n"
+        "4) Keep text content faithful; do not invent new content.\n"
+        "5) Avoid repeating headers across pages unless the PDF explicitly repeats them.\n"
+        "6) Use blank lines between block elements.\n\n"
+        "You are given extracted text and rendered images for the previous/current/next pages. "
+        "Use surrounding pages to resolve heading levels, list continuity, and cross-page tables.\n\n"
         f"PREVIOUS PAGE MARKDOWN (if any):\n{prev_markdown or ''}\n\n"
         f"PREVIOUS PAGE TEXT (if any):\n{prev_text or ''}\n\n"
         f"CURRENT PAGE TEXT:\n{curr_text}\n\n"
@@ -76,7 +100,19 @@ def convert_to_markdown(
         has_prev=prev_text is not None,
         has_next=next_text is not None,
     ):
-        result = agent.run_sync(parts)
+        try:
+            result = agent.run_sync(parts)
+        except Exception as exc:  # noqa: BLE001
+            if allow_fallback:
+                logfire.warning(
+                    "pdfmder.llm.fallback",
+                    reason="llm_error",
+                    model=model_name,
+                    error=str(exc),
+                )
+                return fallback_markdown(curr_text)
+            raise
+
         md = result.output
         logfire.info("pdfmder.llm.page_done", chars=len(md))
         return md.strip() + "\n"

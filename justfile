@@ -27,8 +27,8 @@ check *args:
 docs *args:
     uv run zensical build {{args}}
 
-run:
-    uv run python -m src.main
+run *args:
+    uv run python -m pdfmder.cli {{args}}
 
 # Remove temporary files
 [group('lifecycle')]
