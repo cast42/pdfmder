@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 """Generate data/test.pdf from data/test.md.
 
 We intentionally generate a PDF that contains the *raw markdown source as text*.
 This makes it possible to round-trip via text extraction and compare with test.md.
 """
+
+from __future__ import annotations
 
 from pathlib import Path
 
